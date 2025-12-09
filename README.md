@@ -2,6 +2,8 @@
 
 A data pipeline and visualization system for tracking snow depth across multiple weather stations in the United States. Aggregates data from four public sources into Google BigQuery for analysis in Tableau.
 
+![Dashboard Screenshot](dashboard-screenshot.png)
+
 ## Data Sources
 
 | Source | Coverage | Type | Historical |
