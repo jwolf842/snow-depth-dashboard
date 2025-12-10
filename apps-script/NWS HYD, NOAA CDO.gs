@@ -15,7 +15,10 @@
 // CONFIGURATION
 // ============================================================================
 
-const NOAA_CDO_TOKEN = 'YOUR_NOAA_CDO_TOKEN_HERE';  // Get from https://www.ncdc.noaa.gov/cdo-web/token
+//const NOAA_CDO_TOKEN = 'YOUR_NOAA_CDO_TOKEN_HERE';  // Get from https://www.ncdc.noaa.gov/cdo-web/token
+function getNoaaCdoToken() {
+  return PropertiesService.getScriptProperties().getProperty('NOAA_CDO_TOKEN');
+}
 const NOAA_API_BASE = 'https://www.ncei.noaa.gov/cdo-web/api/v2';
 
 /**
@@ -139,52 +142,49 @@ function onOpen() {
 // ============================================================================
 
 /**
- * Creates the NWS Stations configuration sheet
+ * Adds NWS stations to the unified Stations sheet
  */
 function setupNWSStations() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   
-  // Create or get NWS Stations sheet
-  let stationsSheet = ss.getSheetByName('NWS Stations');
+  let stationsSheet = ss.getSheetByName('Stations');
   if (!stationsSheet) {
-    stationsSheet = ss.insertSheet('NWS Stations');
-  } else {
-    stationsSheet.clear();
+    SpreadsheetApp.getUi().alert('Run SNOTEL setupSheets() first to create the Stations sheet.');
+    return;
   }
   
-  // Headers
-  const headers = ['Station_Name', 'GHCND_ID', 'State', 'Elevation_Ft', 'HYD_Site', 'HYD_Search', 'Active'];
-  stationsSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-  stationsSheet.getRange(1, 1, 1, headers.length).setFontWeight('bold').setBackground('#4285f4').setFontColor('white');
+  // Get existing station names to avoid duplicates
+  const existingData = stationsSheet.getDataRange().getValues();
+  const existingNames = new Set(existingData.slice(1).map(row => row[0]));
   
-  // Populate stations
-  const rows = [];
+  // Build rows for NWS stations
+  const newRows = [];
   for (const [name, config] of Object.entries(NWS_STATIONS)) {
-    rows.push([
-      name,
-      config.ghcnd_id,
-      config.state,
-      config.elevation_ft,
-      config.hyd_site,
-      config.hyd_search,
-      true  // Active by default
-    ]);
+    if (!existingNames.has(name)) {
+      newRows.push([
+        name,
+        config.ghcnd_id,
+        config.state,
+        'NWS',
+        config.elevation_ft,
+        config.hyd_site,
+        config.hyd_search,
+        true
+      ]);
+    }
   }
   
-  if (rows.length > 0) {
-    stationsSheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+  // Append new stations
+  if (newRows.length > 0) {
+    const lastRow = stationsSheet.getLastRow();
+    stationsSheet.getRange(lastRow + 1, 1, newRows.length, 8).setValues(newRows);
+    
+    // Add checkboxes to Active column for new rows
+    //stationsSheet.getRange(lastRow + 1, 8, newRows.length, 1).insertCheckboxes();
   }
   
-  // Format
-  stationsSheet.autoResizeColumns(1, headers.length);
-  stationsSheet.setFrozenRows(1);
-  
-  // Add checkbox for Active column
-  const activeRange = stationsSheet.getRange(2, 7, rows.length, 1);
-  activeRange.insertCheckboxes();
-  
-  Logger.log(`Setup complete: ${rows.length} NWS stations configured`);
-  SpreadsheetApp.getUi().alert(`Setup Complete`, `${rows.length} NWS stations configured.\n\nNext steps:\n1. Add your NOAA CDO token to the script\n2. Run 'Fetch Historical Data' to load history\n3. Run 'Create Daily Trigger' for auto-updates`, SpreadsheetApp.getUi().ButtonSet.OK);
+  Logger.log(`Added ${newRows.length} NWS stations to unified Stations sheet`);
+  SpreadsheetApp.getUi().alert(`Added ${newRows.length} NWS stations to Stations sheet.`);
 }
 
 // ============================================================================
@@ -196,16 +196,16 @@ function setupNWSStations() {
  * Note: API limits to 1 year per request and 5 requests/second
  */
 function fetchNWSHistoricalData() {
-  if (NOAA_CDO_TOKEN === 'YOUR_NOAA_CDO_TOKEN_HERE') {
+  if (!getNoaaCdoToken()) {
     SpreadsheetApp.getUi().alert('Token Required', 'Please add your NOAA CDO API token to the script.\n\nGet a free token at:\nhttps://www.ncdc.noaa.gov/cdo-web/token', SpreadsheetApp.getUi().ButtonSet.OK);
     return;
   }
   
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const stationsSheet = ss.getSheetByName('NWS Stations');
+  const stationsSheet = ss.getSheetByName('Stations');
   
   if (!stationsSheet) {
-    SpreadsheetApp.getUi().alert('Run Setup First', 'Please run "Setup NWS Stations Sheet" first.', SpreadsheetApp.getUi().ButtonSet.OK);
+    SpreadsheetApp.getUi().alert('Run Setup First', 'Please run SNOTEL setupSheets() first.', SpreadsheetApp.getUi().ButtonSet.OK);
     return;
   }
   
@@ -222,7 +222,7 @@ function fetchNWSHistoricalData() {
   const stationData = stationsSheet.getDataRange().getValues();
   const stations = [];
   for (let i = 1; i < stationData.length; i++) {
-    if (stationData[i][6] === true) {  // Active checkbox
+    if (stationData[i][3] === 'NWS' && stationData[i][7] === true) {  // Source=NWS and Active
       stations.push({
         name: stationData[i][0],
         ghcnd_id: stationData[i][1],
@@ -295,7 +295,8 @@ function fetchNWSHistoricalData() {
   if (allRows.length > 0) {
     // Find next empty row
     const lastRow = dataSheet.getLastRow();
-    dataSheet.getRange(lastRow + 1, 1, allRows.length, allRows[0].length).setValues(allRows);
+    //dataSheet.getRange(lastRow + 1, 1, allRows.length, allRows[0].length).setValues(allRows);
+    writeRowsToBigQuery(allRows);
     Logger.log(`Wrote ${allRows.length} records to sheet`);
   }
   
@@ -311,7 +312,7 @@ function fetchNOAAData(stationId, dataType, startDate, endDate) {
   const options = {
     method: 'get',
     headers: {
-      'token': NOAA_CDO_TOKEN
+      'token': getNoaaCdoToken()
     },
     muteHttpExceptions: true
   };
@@ -341,7 +342,7 @@ function fetchNOAAData(stationId, dataType, startDate, endDate) {
  */
 function dailyNWSUpdate() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const stationsSheet = ss.getSheetByName('NWS Stations');
+  const stationsSheet = ss.getSheetByName('Stations');
   
   if (!stationsSheet) {
     Logger.log('NWS Stations sheet not found. Run setup first.');
@@ -359,8 +360,9 @@ function dailyNWSUpdate() {
   const stationsBySite = {};
   
   for (let i = 1; i < stationData.length; i++) {
-    if (stationData[i][6] === true) {  // Active checkbox
-      const site = stationData[i][4];  // HYD_Site
+    if (stationData[i][3] === 'NWS' && stationData[i][7] === true) {  // Source=NWS and Active
+      const site = stationData[i][5];  // HYD_Site
+      if (!site) continue;  // Skip if no HYD_Site
       if (!stationsBySite[site]) {
         stationsBySite[site] = [];
       }
@@ -368,7 +370,7 @@ function dailyNWSUpdate() {
         name: stationData[i][0],
         ghcnd_id: stationData[i][1],
         state: stationData[i][2],
-        search: stationData[i][5]  // HYD_Search
+        search: stationData[i][6]  // HYD_Search
       });
     }
   }
@@ -423,7 +425,8 @@ function dailyNWSUpdate() {
   // Update or append rows
   if (newRows.length > 0) {
     for (const row of newRows) {
-      updateOrAppendNWSRow(dataSheet, row);
+      //updateOrAppendNWSRow(dataSheet, row);
+      writeRowsToBigQuery([row]);
     }
     Logger.log(`Updated ${newRows.length} NWS HYD records`);
   }
@@ -563,7 +566,7 @@ function removeNWSTriggers() {
  * Useful for finding new stations to add
  */
 function findSnowStationsInState(stateCode) {
-  if (NOAA_CDO_TOKEN === 'YOUR_NOAA_CDO_TOKEN_HERE') {
+  if (!getNoaaCdoToken()) {
     Logger.log('Please add your NOAA CDO API token first');
     return;
   }
@@ -572,7 +575,7 @@ function findSnowStationsInState(stateCode) {
   
   const options = {
     method: 'get',
-    headers: { 'token': NOAA_CDO_TOKEN },
+    headers: { 'token': getNoaaCdoToken() },
     muteHttpExceptions: true
   };
   

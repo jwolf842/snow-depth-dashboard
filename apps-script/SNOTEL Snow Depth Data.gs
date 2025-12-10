@@ -18,35 +18,68 @@
  */
 
 // =============================================================================
-// CONFIGURATION - Add or remove stations here
+// CONFIGURATION
 // =============================================================================
 
-const SNOTEL_STATIONS = {
-  // Format: 'Station Name': 'station_id:state:SNTL'
-  // Find IDs at: https://wcc.sc.egov.usda.gov/nwcc/yearcount?network=sntl&counttype=statelist&state=
+// Stations are now managed in the "Stations" sheet
+// Add new stations there with columns: Station_Name, Station_ID, State, Source, Elevation_Ft, Active
+// Source should be "NRCS" for SNOTEL stations
+
+/**
+ * Get active SNOTEL stations from the Stations sheet.
+ * Filters for Source = "NRCS" and Active = TRUE
+ * @returns {Object} Object with station names as keys and triplets as values
+ */
+function getActiveStations() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const stationsSheet = ss.getSheetByName(STATIONS_SHEET_NAME);
   
-  // Washington
-  'Paradise': '679:WA:SNTL',
-  'Stevens Pass': '791:WA:SNTL',
-  'Snoqualmie Pass': '778:WA:SNTL',
+  if (!stationsSheet) {
+    Logger.log('Error: Stations sheet not found');
+    return {};
+  }
   
-  // Colorado
-  'Loveland Basin': '602:CO:SNTL',
-  'Berthoud Summit': '335:CO:SNTL',
+  const data = stationsSheet.getDataRange().getValues();
+  const headers = data[0];
   
-  // California
-  'Mammoth Pass': '587:CA:SNTL',
-  'Donner Summit': '428:CA:SNTL',
+  // Find column indices
+  const nameCol = headers.indexOf('Station_Name');
+  const idCol = headers.indexOf('Station_ID');
+  const stateCol = headers.indexOf('State');
+  const sourceCol = headers.indexOf('Source');
+  const activeCol = headers.indexOf('Active');
   
-  // Utah
-  'Brighton': '366:UT:SNTL',
-  'Snowbird': '766:UT:SNTL',
-  'Alta': '313:UT:SNTL',
+  // Handle legacy format (Station_ID contains full triplet) vs new format (just ID)
+  const stations = {};
   
-  // Wyoming
-  'Jackson Hole': '538:WY:SNTL',
-  'Grand Targhee': '488:WY:SNTL',
-};
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    const name = row[nameCol];
+    const stationId = row[idCol];
+    const state = row[stateCol];
+    const source = sourceCol >= 0 ? row[sourceCol] : 'NRCS';
+    const active = activeCol >= 0 ? row[activeCol] : true;
+    
+    // Skip inactive stations or non-NRCS sources
+    if (!active || (source && source !== 'NRCS')) continue;
+    if (!name || !stationId) continue;
+    
+    // Build triplet - handle both formats
+    let triplet;
+    if (String(stationId).includes(':')) {
+      // Legacy format: already a triplet like "679:WA:SNTL"
+      triplet = stationId;
+    } else {
+      // New format: just the ID, build triplet
+      triplet = `${stationId}:${state}:SNTL`;
+    }
+    
+    stations[name] = triplet;
+  }
+  
+  Logger.log(`Loaded ${Object.keys(stations).length} active NRCS stations`);
+  return stations;
+}
 
 // How many years of historical data to fetch on initial load
 const YEARS_OF_HISTORY = 10;
@@ -98,29 +131,37 @@ function setupSheets() {
   let stationsSheet = ss.getSheetByName(STATIONS_SHEET_NAME);
   if (!stationsSheet) {
     stationsSheet = ss.insertSheet(STATIONS_SHEET_NAME);
-  }
-  
-  // Populate stations list
-  const stationHeaders = ['Station_Name', 'Station_ID', 'State', 'Active'];
-  stationsSheet.getRange(1, 1, 1, stationHeaders.length).setValues([stationHeaders]);
-  stationsSheet.getRange(1, 1, 1, stationHeaders.length)
-    .setFontWeight('bold')
-    .setBackground('#1a73e8')
-    .setFontColor('white');
-  
-  const stationRows = Object.entries(SNOTEL_STATIONS).map(([name, triplet]) => {
-    const [id, state, network] = triplet.split(':');
-    return [name, triplet, state, true];
-  });
-  
-  if (stationRows.length > 0) {
-    stationsSheet.getRange(2, 1, stationRows.length, stationHeaders.length).setValues(stationRows);
+    
+    // Set up headers for new Stations sheet (expanded format)
+    const stationHeaders = ['Station_Name', 'Station_ID', 'State', 'Source', 'Elevation_Ft', 'HYD_Site', 'HYD_Search', 'Active'];
+    stationsSheet.getRange(1, 1, 1, stationHeaders.length).setValues([stationHeaders]);
+    stationsSheet.getRange(1, 1, 1, stationHeaders.length)
+      .setFontWeight('bold')
+      .setBackground('#1a73e8')
+      .setFontColor('white');
+    
+    // Add sample stations
+    const sampleStations = [
+      ['Paradise', '679', 'WA', 'NRCS', 5420, '', '', true],
+      ['Stevens Pass', '791', 'WA', 'NRCS', 4080, '', '', true],
+      ['Loveland Basin', '602', 'CO', 'NRCS', 11410, '', '', true],
+      ['Brighton', '366', 'UT', 'NRCS', 8740, '', '', true],
+    ];
+    stationsSheet.getRange(2, 1, sampleStations.length, stationHeaders.length).setValues(sampleStations);
+    
+    Logger.log('Created new Stations sheet with sample data');
+  } else {
+    // Check if existing sheet needs column updates
+    const existingHeaders = stationsSheet.getRange(1, 1, 1, 8).getValues()[0];
+    if (!existingHeaders.includes('Source')) {
+      Logger.log('Note: Existing Stations sheet found. Add Source column if needed for filtering.');
+    }
   }
   
   stationsSheet.setFrozenRows(1);
   
   Logger.log('✅ Sheets setup complete!');
-  SpreadsheetApp.getUi().alert('Setup complete! Sheets created:\n• ' + DATA_SHEET_NAME + '\n• ' + STATIONS_SHEET_NAME);
+  SpreadsheetApp.getUi().alert('Setup complete! Sheets created:\n• ' + DATA_SHEET_NAME + '\n• ' + STATIONS_SHEET_NAME + '\n\nAdd stations to the Stations sheet, then run Fetch All Data.');
 }
 
 
@@ -134,6 +175,14 @@ function fetchAllStationsData() {
   
   if (!dataSheet) {
     SpreadsheetApp.getUi().alert('Error: Run setupSheets() first!');
+    return;
+  }
+  
+  // Get stations dynamically from sheet
+  const SNOTEL_STATIONS = getActiveStations();
+  
+  if (Object.keys(SNOTEL_STATIONS).length === 0) {
+    SpreadsheetApp.getUi().alert('Error: No active NRCS stations found in Stations sheet!');
     return;
   }
   
@@ -194,7 +243,15 @@ function dailyUpdate() {
     return;
   }
   
+  // Get stations dynamically from sheet
+  const SNOTEL_STATIONS = getActiveStations();
   const stationNames = Object.keys(SNOTEL_STATIONS);
+  
+  if (stationNames.length === 0) {
+    Logger.log('Error: No active NRCS stations found');
+    return;
+  }
+  
   let updatedCount = 0;
   
   for (const stationName of stationNames) {
@@ -420,6 +477,9 @@ function onOpen() {
     .addItem('⬇️ Fetch All Data (Full Refresh)', 'fetchAllStationsData')
     .addItem('🔄 Daily Update (Recent Data)', 'dailyUpdate')
     .addSeparator()
+    .addItem('📊 List Active Stations', 'listActiveStations')
+    .addItem('📥 Import Stations from CSV', 'importStationsFromCSV')
+    .addSeparator()
     .addItem('⏰ Create Daily Trigger', 'createDailyTrigger')
     .addItem('🗑️ Remove All Triggers', 'removeAllTriggers')
     .addToUi();
@@ -433,4 +493,81 @@ function testSingleStation() {
   const data = fetchStationData('Paradise', '679:WA:SNTL', 1);
   Logger.log(`Fetched ${data.length} records`);
   Logger.log('Sample row: ' + JSON.stringify(data[0]));
+}
+
+
+/**
+ * Utility: List all active stations in the log.
+ */
+function listActiveStations() {
+  const stations = getActiveStations();
+  const count = Object.keys(stations).length;
+  
+  Logger.log(`=== ${count} Active NRCS Stations ===`);
+  for (const [name, triplet] of Object.entries(stations)) {
+    Logger.log(`  ${name}: ${triplet}`);
+  }
+  
+  SpreadsheetApp.getUi().alert(`Found ${count} active NRCS stations.\nCheck View > Logs for details.`);
+}
+
+
+/**
+ * Utility: Import stations from CSV data.
+ * Paste CSV content into a temporary sheet named "Import" first.
+ */
+function importStationsFromCSV() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const importSheet = ss.getSheetByName('Import');
+  const stationsSheet = ss.getSheetByName(STATIONS_SHEET_NAME);
+  
+  if (!importSheet) {
+    SpreadsheetApp.getUi().alert('Create a sheet named "Import" and paste CSV data there first.');
+    return;
+  }
+  
+  if (!stationsSheet) {
+    SpreadsheetApp.getUi().alert('Run setupSheets() first to create the Stations sheet.');
+    return;
+  }
+  
+  const importData = importSheet.getDataRange().getValues();
+  const importHeaders = importData[0];
+  
+  // Find columns in import data
+  const cols = {
+    name: importHeaders.indexOf('Station_Name'),
+    id: importHeaders.indexOf('Station_ID'),
+    state: importHeaders.indexOf('State'),
+    source: importHeaders.indexOf('Source'),
+    elev: importHeaders.indexOf('Elevation_Ft'),
+    hyd_site: importHeaders.indexOf('HYD_Site'),
+    hyd_search: importHeaders.indexOf('HYD_Search'),
+    active: importHeaders.indexOf('Active')
+  };
+  
+  // Append to stations sheet
+  const lastRow = stationsSheet.getLastRow();
+  let addedCount = 0;
+  
+  for (let i = 1; i < importData.length; i++) {
+    const row = importData[i];
+    if (!row[cols.name]) continue;
+    
+    const newRow = [
+      row[cols.name] || '',
+      row[cols.id] || '',
+      row[cols.state] || '',
+      row[cols.source] || 'NRCS',
+      row[cols.elev] || '',
+      row[cols.hyd_site] || '',
+      row[cols.hyd_search] || '',
+      row[cols.active] !== false && row[cols.active] !== 'FALSE'
+    ];
+    
+    stationsSheet.appendRow(newRow);
+    addedCount++;
+  }
+  
+  SpreadsheetApp.getUi().alert(`Imported ${addedCount} stations.\nYou can now delete the Import sheet.`);
 }
