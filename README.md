@@ -4,7 +4,7 @@ A data pipeline and visualization system for tracking snow depth across multiple
 
 [View the interactive dashboard on Tableau Public](https://public.tableau.com/app/profile/jwolf842/viz/SnowDepthDashboard/SnowdepthDashboard)
 
-![Dashboard Screenshot](dashboard-screenshot.png)
+![Dashboard Screenshot](dashboard-screenshot.png?v=2)
 
 ## Data Sources
 
